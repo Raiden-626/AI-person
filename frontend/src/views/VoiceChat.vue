@@ -120,6 +120,20 @@ async function startRecording() {
     // 请求麦克风权限
     audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     
+    // 先设置 isRecording 为 true，让 canvas 渲染出来
+    isRecording.value = true;
+    
+    // 等待下一帧确保 canvas 已渲染
+    await nextTick();
+    
+    // 初始化 canvas 尺寸
+    const canvas = canvasRef.value;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * 2;
+      canvas.height = rect.height * 2;
+    }
+    
     // 启动波形可视化
     startVisualization(audioStream);
     
@@ -146,10 +160,10 @@ async function startRecording() {
     };
     
     mediaRecorder.start();
-    isRecording.value = true;
   } catch (error) {
     console.error('录音启动失败:', error);
     errorMessage.value = '无法访问麦克风，请检查权限设置';
+    isRecording.value = false;
   }
 }
 
@@ -247,6 +261,16 @@ function speakText(text) {
     window.speechSynthesis.speak(utterance);
   } else {
     console.warn('浏览器不支持Web Speech API');
+  }
+}
+
+/**
+ * 停止语音播放
+ */
+function stopSpeaking() {
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+    isSpeaking.value = false;
   }
 }
 
@@ -349,9 +373,7 @@ onUnmounted(() => {
   }
   
   // 取消正在播放的语音
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-  }
+  stopSpeaking();
   
   // 清理克隆音频URL
   if (clonedAudioUrl.value) {
@@ -410,9 +432,12 @@ onUnmounted(() => {
         <div class="avatar">🤖</div>
         <div class="message-content">
           <p>{{ replyText }}</p>
-          <div v-if="isSpeaking" class="speaking-indicator">
+          <div v-if="isSpeaking" class="speaking-controls">
             <span class="sound-wave"></span>
-            <span>正在播放语音...</span>
+            <span>正在播放...</span>
+            <button @click="stopSpeaking" class="stop-btn" title="停止播放">
+              ⏹ 停止
+            </button>
           </div>
         </div>
       </div>
@@ -477,14 +502,30 @@ onUnmounted(() => {
     
     <!-- 使用说明 -->
     <div class="tips-section">
-      <h3>使用说明</h3>
-      <ul>
-        <li>点击"开始录音"按钮，允许浏览器访问麦克风</li>
-        <li>对着麦克风说话，说完后点击"停止录音"</li>
-        <li>系统会自动识别语音、生成回复并播放</li>
-        <li>TTS会自动过滤表情符号，只朗读文字内容</li>
-        <li>声音克隆功能需要后端OpenVoice服务运行在8000端口</li>
-      </ul>
+      <h3>💡 快速上手</h3>
+      <div class="tips-grid">
+        <div class="tip-item">
+          <span class="tip-icon">🎤</span>
+          <div class="tip-content">
+            <strong>录音对话</strong>
+            <p>点击录音按钮，说完后再次点击停止，系统自动识别并回复</p>
+          </div>
+        </div>
+        <div class="tip-item">
+          <span class="tip-icon">⏹</span>
+          <div class="tip-content">
+            <strong>随时打断</strong>
+            <p>AI回复时点击"停止"按钮可立即中断语音播放</p>
+          </div>
+        </div>
+        <div class="tip-item">
+          <span class="tip-icon">🎭</span>
+          <div class="tip-content">
+            <strong>声音克隆</strong>
+            <p>上传3-30秒参考音频，输入文本即可生成克隆语音</p>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -679,28 +720,52 @@ h1 {
   line-height: 1.6;
 }
 
-/* 语音播放指示器 */
-.speaking-indicator {
+/* 语音播放控制 */
+.speaking-controls {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  color: #2d8a6e;
-  margin-top: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e9ecef;
 }
 
 .sound-wave {
   display: inline-block;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   background: linear-gradient(135deg, #2d8a6e, #0f5132);
   border-radius: 50%;
   animation: soundPulse 1s infinite;
+  flex-shrink: 0;
 }
 
 @keyframes soundPulse {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.3); opacity: 0.7; }
+}
+
+.speaking-controls span:last-of-type {
+  font-size: 13px;
+  color: #2d8a6e;
+  flex: 1;
+}
+
+.stop-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid #dc3545;
+  border-radius: 4px;
+  background: white;
+  color: #dc3545;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.stop-btn:hover {
+  background: #dc3545;
+  color: white;
 }
 
 /* 声音克隆区域 */
@@ -842,26 +907,70 @@ h1 {
   color: white;
 }
 
+/* 使用说明优化 */
 .tips-section {
-  background: #f8f9fa;
-  padding: 20px;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e8f5f0 100%);
+  padding: 24px;
   border-radius: 12px;
-  border-left: 4px solid #2d8a6e;
+  border: 1px solid #d4edda;
 }
 
 .tips-section h3 {
-  margin: 0 0 15px 0;
+  margin: 0 0 20px 0;
   color: #2d8a6e;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.tips-section ul {
+.tips-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.tip-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s ease;
+}
+
+.tip-item:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
+}
+
+.tip-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.tip-content strong {
+  display: block;
+  color: #2d8a6e;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.tip-content p {
   margin: 0;
-  padding-left: 20px;
+  font-size: 13px;
+  color: #6c757d;
+  line-height: 1.5;
 }
 
-.tips-section li {
-  margin-bottom: 8px;
-  line-height: 1.6;
-  color: #495057;
+@media (max-width: 600px) {
+  .tips-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .message-content {
+    max-width: 85%;
+  }
 }
 </style>
