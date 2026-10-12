@@ -1,6 +1,7 @@
 """
-OpenVoice 声音克隆服务
-提供 HTTP API 接口，接收参考音频和文本，返回克隆音色的语音
+OpenVoice 声音克隆服务（Mock 模式）
+提供 HTTP API 接口，接收参考音频和文本，返回模拟的克隆音色语音
+注意：当前为 Mock 模式，不依赖真实模型文件
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,14 +9,12 @@ from fastapi.responses import Response
 import uvicorn
 import os
 import tempfile
-import base64
+import numpy as np
+import soundfile as sf
+import io
 from pathlib import Path
 
-# 注意：以下导入需要在安装 OpenVoice 后才能使用
-# from openvoice import se_extractor
-# from openvoice.api import BaseSpeakerTTS, ToneColorConverter
-
-app = FastAPI(title="OpenVoice Voice Cloning Service")
+app = FastAPI(title="OpenVoice Voice Cloning Service (Mock)")
 
 # 允许跨域
 app.add_middleware(
@@ -25,34 +24,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局变量存储模型实例
-base_speaker_tts = None
-tone_color_converter = None
-
-# 音色缓存目录
-VOICE_CACHE_DIR = Path("./voice_cache")
-VOICE_CACHE_DIR.mkdir(exist_ok=True)
+# 全局变量
+MOCK_MODE = True
+print("[OpenVoice] 当前运行在 Mock 模式（无需模型文件）")
 
 
 @app.on_event("startup")
 async def startup_event():
-    """服务启动时加载模型"""
-    global base_speaker_tts, tone_color_converter
-    
-    try:
-        # 这里需要实际安装 OpenVoice 后取消注释
-        # from openvoice import se_extractor
-        # from openvoice.api import BaseSpeakerTTS, ToneColorConverter
-        
-        # checkpoint_base = 'checkpoints/base_speakers/EN'
-        # checkpoint_converter = 'checkpoints/converter'
-        
-        # base_speaker_tts = BaseSpeakerTTS(checkpoint_base, device='cuda' if torch.cuda.is_available() else 'cpu')
-        # tone_color_converter = ToneColorConverter(checkpoint_converter, device='cuda' if torch.cuda.is_available() else 'cpu')
-        
-        print("[OpenVoice] 模型加载成功（Mock模式）")
-    except Exception as e:
-        print(f"[OpenVoice] 模型加载失败，使用Mock模式: {e}")
+    """服务启动"""
+    print("[OpenVoice] 服务启动成功 - Mock 模式")
+    print("[OpenVoice] 提示：当前返回模拟音频，非真实音色克隆")
 
 
 @app.post("/api/v1/clone_and_synthesize")
@@ -62,7 +43,7 @@ async def clone_and_synthesize(
     language: str = "zh"
 ):
     """
-    声音克隆 + 语音合成
+    声音克隆 + 语音合成（Mock 实现）
     
     参数:
     - reference_audio: 参考音频文件（3-30秒，清晰人声）
@@ -70,47 +51,41 @@ async def clone_and_synthesize(
     - language: 语言代码（zh/en/ja/ko）
     
     返回:
-    - 克隆音色的语音音频（MP3格式）
+    - 模拟的克隆语音音频（WAV格式）
     """
     if not text:
         raise HTTPException(status_code=400, detail="文本内容不能为空")
     
     try:
-        # 保存参考音频到临时文件
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            content = await reference_audio.read()
-            tmp_file.write(content)
-            ref_audio_path = tmp_file.name
+        # 读取参考音频（仅用于验证，实际不使用）
+        content = await reference_audio.read()
+        print(f"[OpenVoice Mock] 收到请求: text='{text[:50]}...', language={language}, ref_size={len(content)} bytes")
         
-        print(f"[OpenVoice] 收到请求: text='{text[:50]}...', language={language}")
+        # Mock 实现：生成一个简单的正弦波音频作为占位符
+        # 实际使用时需要安装 OpenVoice 模型并切换到真实模式
+        sample_rate = 22050
+        duration = max(1.0, len(text) * 0.15)  # 根据文本长度估算语音时长
+        t = np.linspace(0, duration, int(sample_rate * duration))
         
-        # TODO: 实际的 OpenVoice 调用逻辑
-        # 1. 提取参考音频的音色嵌入
-        # ref_speaker_path = se_extractor.get_se(ref_audio_path, tone_color_converter, vad=True)
+        # 生成简单的音调信号（模拟语音）
+        frequency = 220  # 基频
+        audio_data = 0.3 * np.sin(2 * np.pi * frequency * t)
         
-        # 2. 使用基础说话人生成语音
-        # base_speaker_tts.tts(text, output_path, speaker='default', language=language, speed=1.0)
+        # 添加简单的包络使声音更自然
+        envelope = np.exp(-t / duration) * (1 - np.exp(-t * 10))
+        audio_data = audio_data * envelope
         
-        # 3. 转换音色
-        # tone_color_converter.convert(output_path, ref_speaker_path, output_path_converted)
+        # 转换为 WAV 格式
+        wav_buffer = io.BytesIO()
+        sf.write(wav_buffer, audio_data, sample_rate, format='WAV')
+        wav_bytes = wav_buffer.getvalue()
         
-        # Mock 实现：返回一个简单的提示
-        # 实际使用时需要安装 OpenVoice 并取消下面的注释
-        
-        mock_audio_path = Path(__file__).parent / "mock_response.mp3"
-        if mock_audio_path.exists():
-            audio_bytes = mock_audio_path.read_bytes()
-        else:
-            # 如果没有 mock 文件，返回一个空响应
-            audio_bytes = b""
-        
-        # 清理临时文件
-        os.unlink(ref_audio_path)
+        print(f"[OpenVoice Mock] 生成模拟音频: {len(wav_bytes)} bytes, {duration:.2f}s")
         
         return Response(
-            content=audio_bytes,
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": "attachment; filename=cloned_voice.mp3"}
+            content=wav_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": "attachment; filename=cloned_voice_mock.wav"}
         )
         
     except Exception as e:
@@ -122,8 +97,9 @@ async def health_check():
     """健康检查"""
     return {
         "status": "ok",
-        "service": "OpenVoice Voice Cloning",
-        "model_loaded": base_speaker_tts is not None
+        "service": "OpenVoice Voice Cloning (Mock)",
+        "mock_mode": MOCK_MODE,
+        "message": "当前为 Mock 模式，返回模拟音频"
     }
 
 
