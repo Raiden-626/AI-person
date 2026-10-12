@@ -77,25 +77,22 @@ class ASRService {
       }
     } catch (error) {
       console.error('百度语音识别失败:', error.message);
-      console.error('错误详情:', error);
       
       // 清理临时文件（包括原始音频和可能的wav）
-      try {
-        if (fs.existsSync(audioPath)) {
-          fs.unlinkSync(audioPath);
-        }
-      } catch (e) {
-        // 忽略清理错误
-      }
+      const cleanupFiles = [audioPath];
       
-      // 清理可能的wav文件
-      try {
-        const wavPath = audioPath.replace(/\.[^.]+$/, '') + '_converted.wav';
-        if (fs.existsSync(wavPath)) {
-          fs.unlinkSync(wavPath);
+      // 添加可能的wav转换文件
+      const wavPath = audioPath.replace(/\.[^.]+$/, '') + '_converted.wav';
+      cleanupFiles.push(wavPath);
+      
+      for (const filePath of cleanupFiles) {
+        try {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
+        } catch (e) {
+          // 忽略单个文件清理失败，继续清理其他文件
         }
-      } catch (e) {
-        // 忽略清理错误
       }
       
       // API调用失败时使用Mock数据

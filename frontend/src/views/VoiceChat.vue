@@ -20,6 +20,7 @@ let audioContext = null;
 let analyser = null;
 let dataArray = null;
 let animationId = null;
+let sourceNode = null; // 存储音频源节点以便清理
 const canvasRef = ref(null);
 
 // 声音克隆相关
@@ -45,11 +46,17 @@ function initAudioContext() {
 function startVisualization(stream) {
   initAudioContext();
   
-  const source = audioContext.createMediaStreamSource(stream);
+  // 断开旧的源节点，防止内存泄漏
+  if (sourceNode) {
+    sourceNode.disconnect();
+    sourceNode = null;
+  }
+  
+  sourceNode = audioContext.createMediaStreamSource(stream);
   analyser = audioContext.createAnalyser();
   analyser.fftSize = 256;
   
-  source.connect(analyser);
+  sourceNode.connect(analyser);
   
   const bufferLength = analyser.frequencyBinCount;
   dataArray = new Uint8Array(bufferLength);

@@ -44,15 +44,20 @@ class VoiceCloningService {
    * @returns {Promise<Buffer>} 克隆音色的语音音频Buffer
    */
   async cloneVoice(referenceAudioPath, text, language = 'zh') {
+    let readStream = null;
+    
     try {
       if (!this.enabled) {
         console.log('[VoiceCloning] 使用Mock数据');
         return this.getMockAudio();
       }
 
+      // 创建可读流
+      readStream = fs.createReadStream(referenceAudioPath);
+      
       // 创建表单数据
       const form = new FormData();
-      form.append('reference_audio', fs.createReadStream(referenceAudioPath));
+      form.append('reference_audio', readStream);
       form.append('text', text);
       form.append('language', language);
 
@@ -70,6 +75,11 @@ class VoiceCloningService {
       return Buffer.from(response.data);
     } catch (error) {
       console.error('[VoiceCloning] 克隆失败:', error.message);
+      
+      // 确保流被销毁
+      if (readStream && !readStream.destroyed) {
+        readStream.destroy();
+      }
       
       // 失败时返回 Mock 音频
       console.log('[VoiceCloning] 使用Mock数据');
