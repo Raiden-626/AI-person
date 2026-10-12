@@ -35,3 +35,25 @@ export async function chatWithText(text) {
   const response = await apiClient.post('/audio/chat', { text });
   return response.data.reply;
 }
+
+/**
+ * 声音克隆：上传参考音频和文本，生成克隆语音
+ * @param {Blob} referenceAudio - 参考音频Blob对象
+ * @param {string} text - 要合成的文本
+ * @returns {Promise<Blob>} 克隆语音的音频Blob
+ */
+export async function cloneVoice(referenceAudio, text) {
+  const formData = new FormData();
+  formData.append('reference_audio', referenceAudio, 'reference.wav');
+  formData.append('text', text);
+  formData.append('language', 'zh');
+
+  const response = await apiClient.post('/audio/clone-voice', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    responseType: 'blob'
+  });
+
+  return response.data;
+}

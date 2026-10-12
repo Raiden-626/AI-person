@@ -33,6 +33,6 @@ app.get('/api/health', (req, res) => {
 // 启动服务器
 app.listen(PORT, () => {
   console.log(`AI数字人后端服务运行在 http://localhost:${PORT}`);
-  console.log(`FunASR服务地址: ${process.env.FUNASR_URL || '未配置'}`);
-  console.log(`DeepSeek API: ${process.env.DEEPSEEK_API_KEY ? '已配置' : '未配置'}`);
+  console.log(`硅基流动 API: ${process.env.SILICONFLOW_API_KEY ? '已配置 (' + process.env.SILICONFLOW_MODEL + ')' : '未配置'}`);
+  console.log(`百度语音识别: ${process.env.BAIDU_APP_ID ? '已配置' : '未配置'}`);
 });

@@ -26,4 +26,7 @@ router.post('/transcribe', upload.single('audio'), audioController.transcribe);
 // 智能对话：文本→LLM生成回复
 router.post('/chat', audioController.chat);
 
+// 声音克隆：参考音频+文本→克隆音色语音
+router.post('/clone-voice', upload.single('reference_audio'), audioController.cloneVoice);
+
 module.exports = router;

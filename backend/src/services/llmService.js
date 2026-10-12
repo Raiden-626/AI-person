@@ -2,12 +2,13 @@ const axios = require('axios');
 
 /**
  * LLM服务 - 智能对话生成
- * 使用DeepSeek API
+ * 使用硅基流动（SiliconFlow）API，模型为 DeepSeek-V4-Flash
  */
 class LLMService {
   constructor() {
-    this.apiKey = process.env.DEEPSEEK_API_KEY;
-    this.baseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+    this.apiKey = process.env.SILICONFLOW_API_KEY;
+    this.baseUrl = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
+    this.model = process.env.SILICONFLOW_MODEL || 'deepseek-ai/DeepSeek-V4-Flash';
     
     // 系统提示词 - 定义数字人的通用性格
     this.systemPrompt = `你是一个友好、热情的AI助手。你的特点是：
@@ -27,15 +28,15 @@ class LLMService {
    */
   async generateReply(userText) {
     try {
-      if (!this.apiKey || this.apiKey === 'your_deepseek_api_key_here') {
-        console.warn('DeepSeek API Key未配置，使用Mock数据');
+      if (!this.apiKey || this.apiKey === 'your_siliconflow_api_key_here') {
+        console.warn('硅基流动 API Key未配置，使用Mock数据');
         return this.getMockReply(userText);
       }
 
       const response = await axios.post(
         `${this.baseUrl}/chat/completions`,
         {
-          model: 'deepseek-chat',
+          model: this.model,
           messages: [
             { role: 'system', content: this.systemPrompt },
             { role: 'user', content: userText }
@@ -55,10 +56,10 @@ class LLMService {
       if (response.data && response.data.choices && response.data.choices[0]) {
         return response.data.choices[0].message.content.trim();
       } else {
-        throw new Error('DeepSeek返回数据格式异常');
+        throw new Error('LLM返回数据格式异常');
       }
     } catch (error) {
-      console.error('DeepSeek API调用失败:', error.message);
+      console.error('LLM API调用失败:', error.message);
       
       // API调用失败时使用Mock数据
       console.log('使用Mock数据进行调试...');
