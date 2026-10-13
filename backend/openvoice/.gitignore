@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# 模型文件（体积大）
+checkpoints/
+checkpoints_v2/
+
+# 源码克隆目录（体积大）
+openvoice-src/
+melo-tts-src/
+openvoice-v2-src/
+
+# 临时文件
+*.tmp
+*.log
+*.wav
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 环境变量
+.env
