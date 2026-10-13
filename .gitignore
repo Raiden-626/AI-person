@@ -1,0 +1,75 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# 模型文件（体积大）
+checkpoints/
+checkpoints_v2/
+*.pth
+*.bin
+*.safetensors
+
+# 源码克隆目录
+openvoice-src/
+melo-tts-src/
+openvoice-v2-src/
+
+# 临时文件
+*.tmp
+*.log
+uploads/*.wav
+uploads/*.mp3
+uploads/*.webm
+
+# 音频输出
+output_audio/
+cloned_voices/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 构建输出
+frontend/dist/
+backend/dist/
+
+# NLTK 数据
+nltk_data/
+
+# 缓存
+.cache/
+*.cache
+
+# 日志
+logs/
+*.log

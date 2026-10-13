@@ -181,6 +181,10 @@ async def clone_and_synthesize(
                     converter,
                     vad=True
                 )
+                # 确保 tgt_se 是 Tensor
+                if isinstance(tgt_se, tuple):
+                    tgt_se = tgt_se[0]
+                print(f"[OpenVoice] tgt_se 类型: {type(tgt_se)}, 形状: {tgt_se.shape if hasattr(tgt_se, 'shape') else 'N/A'}")
                 
                 # 3. 获取源音频的音色特征（使用对应语言的默认 speaker）
                 se_path = BASE_SPEAKERS_DIR / LANGUAGE_MAP.get(lang_key, "zh.pth")
@@ -192,6 +196,11 @@ async def clone_and_synthesize(
                     src_se = se_extractor.get_se(source_audio_path, converter, vad=True)
                     print(f"[OpenVoice] 从源音频提取 speaker embedding")
                 
+                # 确保 src_se 是 Tensor
+                if isinstance(src_se, tuple):
+                    src_se = src_se[0]
+                print(f"[OpenVoice] src_se 类型: {type(src_se)}, 形状: {src_se.shape if hasattr(src_se, 'shape') else 'N/A'}")
+                
                 # 4. 音色转换
                 output_path = ref_audio_path.replace(".wav", "_output.wav")
                 print(f"[OpenVoice] 执行音色转换...")
@@ -199,7 +208,8 @@ async def clone_and_synthesize(
                     audio_src_path=source_audio_path,
                     src_se=src_se,
                     tgt_se=tgt_se,
-                    output_path=output_path
+                    output_path=output_path,
+                    tau=0.2  # 相似度参数：0.1-0.5，越小越像目标音色
                 )
                 
                 # 读取输出音频
