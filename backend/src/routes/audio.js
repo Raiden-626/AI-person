@@ -23,10 +23,15 @@ const upload = multer({
 // 语音识别：音频转文字
 router.post('/transcribe', upload.single('audio'), audioController.transcribe);
 
-// 智能对话：文本→LLM生成回复
+// 智能对话：文本→LLM生成回复（支持声音克隆）
 router.post('/chat', audioController.chat);
 
 // 声音克隆：参考音频+文本→克隆音色语音
 router.post('/clone-voice', upload.single('reference_audio'), audioController.cloneVoice);
+
+// 声音档案管理
+router.post('/voice-profiles', upload.single('audio'), audioController.createVoiceProfile);
+router.get('/voice-profiles', audioController.getVoiceProfiles);
+router.delete('/voice-profiles/:id', audioController.deleteVoiceProfile);
 
 module.exports = router;

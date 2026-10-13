@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick } from 'vue';
-import { transcribeAudio, chatWithText, cloneVoice } from '@/api/audio';
+import { transcribeAudio, chatWithText, createVoiceProfile, getVoiceProfiles, deleteVoiceProfile } from '@/api/audio';
 
 // 状态管理
 const isRecording = ref(false);
@@ -20,16 +20,18 @@ let audioContext = null;
 let analyser = null;
 let dataArray = null;
 let animationId = null;
-let sourceNode = null; // 存储音频源节点以便清理
+let sourceNode = null;
 const canvasRef = ref(null);
 
-// 声音克隆相关
-const showCloneSection = ref(false);
-const referenceAudioFile = ref(null);
-const cloneTextInput = ref('');
-const isCloning = ref(false);
-const clonedAudioUrl = ref(null);
-const clonedAudioPlayer = ref(null);
+// 声音档案相关
+const voiceProfiles = ref([]);
+const selectedProfileId = ref(null);
+const showProfilePanel = ref(false);
+const newProfileName = ref('');
+const isCreatingProfile = ref(false);
+
+// 对话历史
+const chatHistory = ref([]);
 
 /**
  * 初始化音频上下文
@@ -46,7 +48,6 @@ function initAudioContext() {
 function startVisualization(stream) {
   initAudioContext();
   
-  // 断开旧的源节点，防止内存泄漏
   if (sourceNode) {
     sourceNode.disconnect();
     sourceNode = null;
@@ -88,7 +89,6 @@ function drawWaveform() {
   for (let i = 0; i < dataArray.length; i++) {
     const barHeight = (dataArray[i] / 255) * height;
     
-    // 渐变色
     const gradient = ctx.createLinearGradient(0, height - barHeight, 0, height);
     gradient.addColorStop(0, '#2d8a6e');
     gradient.addColorStop(1, '#0f5132');
@@ -109,11 +109,11 @@ function stopVisualization() {
     animationId = null;
   }
   
-  // 清空画布
   const canvas = canvasRef.value;
   if (canvas) {
     const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#f5f7fa';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 }
 
@@ -123,28 +123,8 @@ function stopVisualization() {
 async function startRecording() {
   try {
     errorMessage.value = '';
-    
-    // 请求麦克风权限
     audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     
-    // 先设置 isRecording 为 true，让 canvas 渲染出来
-    isRecording.value = true;
-    
-    // 等待下一帧确保 canvas 已渲染
-    await nextTick();
-    
-    // 初始化 canvas 尺寸
-    const canvas = canvasRef.value;
-    if (canvas) {
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * 2;
-      canvas.height = rect.height * 2;
-    }
-    
-    // 启动波形可视化
-    startVisualization(audioStream);
-    
-    // 创建MediaRecorder
     mediaRecorder = new MediaRecorder(audioStream, {
       mimeType: 'audio/webm;codecs=opus'
     });
@@ -159,18 +139,25 @@ async function startRecording() {
     
     mediaRecorder.onstop = async () => {
       const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-      await handleAudioRecorded(audioBlob);
+      await processAudio(audioBlob);
       
-      // 停止所有音轨
-      audioStream.getTracks().forEach(track => track.stop());
+      if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+        audioStream = null;
+      }
+      
       stopVisualization();
     };
     
     mediaRecorder.start();
+    isRecording.value = true;
+    
+    await nextTick();
+    startVisualization(audioStream);
+    
   } catch (error) {
     console.error('录音启动失败:', error);
     errorMessage.value = '无法访问麦克风，请检查权限设置';
-    isRecording.value = false;
   }
 }
 
@@ -178,107 +165,187 @@ async function startRecording() {
  * 停止录音
  */
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
     isRecording.value = false;
   }
 }
 
 /**
- * 处理录音完成的音频
+ * 处理录音
  */
-async function handleAudioRecorded(audioBlob) {
+async function processAudio(audioBlob) {
   isLoading.value = true;
   errorMessage.value = '';
   
   try {
-    // 1. 语音识别：音频转文字
     const text = await transcribeAudio(audioBlob);
     recognizedText.value = text;
     
-    // 2. 智能对话：获取LLM回复
-    const reply = await chatWithText(text);
-    replyText.value = reply;
-    
-    // 3. 使用Web Speech API播放回复（前端TTS）
-    speakText(reply);
+    await sendToLLM(text);
   } catch (error) {
-    console.error('对话处理失败:', error);
-    errorMessage.value = '对话处理失败，请稍后重试';
+    console.error('处理失败:', error);
+    errorMessage.value = '处理失败，请重试';
   } finally {
     isLoading.value = false;
   }
 }
 
 /**
- * 清理文本中的表情符号和特殊字符，避免TTS读出
+ * 发送到LLM
  */
-function cleanTextForTTS(text) {
-  // 移除常见表情符号（Unicode范围）
-  return text
-    .replace(/[\u{1F600}-\u{1F64F}]/gu, '')  // Emoticons
-    .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')  // Misc Symbols and Pictographs
-    .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')  // Transport and Map
-    .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '')  // Regional Indicator Symbols
-    .replace(/[\u{2600}-\u{26FF}]/gu, '')    // Misc symbols
-    .replace(/[\u{2700}-\u{27BF}]/gu, '')    // Dingbats
-    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')    // Variation Selectors
-    .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')  // Supplemental Symbols
-    .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '')  // Chess Symbols
-    .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')  // Symbols and Pictographs Extended-A
-    .replace(/[^\w\s\u4e00-\u9fff，。！？、；：""''（）【】《》…—～·]/g, '') // 保留中文标点
-    .trim();
+async function sendToLLM(text) {
+  isLoading.value = true;
+  errorMessage.value = '';
+  
+  try {
+    const result = await chatWithText(text, selectedProfileId.value);
+    replyText.value = result.reply;
+    
+    // 添加到对话历史
+    chatHistory.value.push({
+      type: 'user',
+      text: text,
+      timestamp: new Date().toISOString()
+    });
+    
+    chatHistory.value.push({
+      type: 'ai',
+      text: result.reply,
+      audioUrl: result.audioBlob ? URL.createObjectURL(result.audioBlob) : null,
+      audioFile: result.audioFile,
+      timestamp: new Date().toISOString()
+    });
+    
+    // 如果有音频，自动播放
+    if (result.audioBlob) {
+      playAudioBlob(result.audioBlob);
+    }
+    
+  } catch (error) {
+    console.error('LLM处理失败:', error);
+    errorMessage.value = 'AI回复失败，请重试';
+  } finally {
+    isLoading.value = false;
+  }
 }
 
 /**
- * 使用Web Speech API合成语音
+ * 播放音频Blob
  */
-function speakText(text) {
-  if ('speechSynthesis' in window) {
-    // 取消之前的语音
-    window.speechSynthesis.cancel();
-    
-    // 清理文本中的表情符号
-    const cleanText = cleanTextForTTS(text);
-    
-    if (!cleanText) {
-      console.warn('清理后的文本为空，跳过语音合成');
-      return;
-    }
-    
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = 'zh-CN';
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-    
-    utterance.onstart = () => {
-      isSpeaking.value = true;
-    };
-    
-    utterance.onend = () => {
-      isSpeaking.value = false;
-    };
-    
-    utterance.onerror = (event) => {
-      console.error('语音合成错误:', event);
-      isSpeaking.value = false;
-    };
-    
-    window.speechSynthesis.speak(utterance);
-  } else {
-    console.warn('浏览器不支持Web Speech API');
-  }
+function playAudioBlob(audioBlob) {
+  const url = URL.createObjectURL(audioBlob);
+  const audio = new Audio(url);
+  
+  audio.onplay = () => {
+    isSpeaking.value = true;
+  };
+  
+  audio.onended = () => {
+    isSpeaking.value = false;
+    URL.revokeObjectURL(url);
+  };
+  
+  audio.onerror = (e) => {
+    console.error('音频播放失败:', e);
+    isSpeaking.value = false;
+  };
+  
+  audio.play();
 }
 
 /**
  * 停止语音播放
  */
 function stopSpeaking() {
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-    isSpeaking.value = false;
+  const audios = document.querySelectorAll('audio');
+  audios.forEach(audio => {
+    if (!audio.paused) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+  });
+  isSpeaking.value = false;
+}
+
+/**
+ * 加载声音档案
+ */
+async function loadVoiceProfiles() {
+  try {
+    voiceProfiles.value = await getVoiceProfiles();
+  } catch (error) {
+    console.error('加载声音档案失败:', error);
   }
+}
+
+/**
+ * 创建声音档案
+ */
+async function handleCreateProfile() {
+  if (!newProfileName.value.trim()) {
+    errorMessage.value = '请输入档案名称';
+    return;
+  }
+  
+  // 创建文件输入
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'audio/*';
+  
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    isCreatingProfile.value = true;
+    errorMessage.value = '';
+    
+    try {
+      const profile = await createVoiceProfile(file, newProfileName.value);
+      voiceProfiles.value.push(profile);
+      newProfileName.value = '';
+      showProfilePanel.value = false;
+      
+      // 自动选中新创建的档案
+      selectedProfileId.value = profile.id;
+      
+    } catch (error) {
+      console.error('创建声音档案失败:', error);
+      errorMessage.value = '创建失败，请重试';
+    } finally {
+      isCreatingProfile.value = false;
+    }
+  };
+  
+  input.click();
+}
+
+/**
+ * 删除声音档案
+ */
+async function handleDeleteProfile(id) {
+  if (!confirm('确定要删除这个声音档案吗？')) {
+    return;
+  }
+  
+  try {
+    await deleteVoiceProfile(id);
+    voiceProfiles.value = voiceProfiles.value.filter(p => p.id !== id);
+    
+    if (selectedProfileId.value === id) {
+      selectedProfileId.value = null;
+    }
+  } catch (error) {
+    console.error('删除声音档案失败:', error);
+    errorMessage.value = '删除失败';
+  }
+}
+
+/**
+ * 选择声音档案
+ */
+function selectProfile(id) {
+  selectedProfileId.value = selectedProfileId.value === id ? null : id;
 }
 
 /**
@@ -288,83 +355,19 @@ function clearError() {
   errorMessage.value = '';
 }
 
-/**
- * 切换声音克隆面板显示
- */
-function toggleCloneSection() {
-  showCloneSection.value = !showCloneSection.value;
-  // 关闭时清理资源
-  if (!showCloneSection.value && clonedAudioUrl.value) {
-    URL.revokeObjectURL(clonedAudioUrl.value);
-    clonedAudioUrl.value = null;
-  }
-}
-
-/**
- * 处理参考音频文件选择
- */
-function handleReferenceFileChange(event) {
-  const file = event.target.files[0];
-  if (file) {
-    referenceAudioFile.value = file;
-    errorMessage.value = '';
-  }
-}
-
-/**
- * 执行声音克隆
- */
-async function executeVoiceClone() {
-  if (!referenceAudioFile.value) {
-    errorMessage.value = '请先上传参考音频文件';
-    return;
-  }
-  
-  if (!cloneTextInput.value.trim()) {
-    errorMessage.value = '请输入要合成的文本';
-    return;
-  }
-  
-  isCloning.value = true;
-  errorMessage.value = '';
-  clonedAudioUrl.value = null;
-  
-  try {
-    const audioBlob = await cloneVoice(referenceAudioFile.value, cloneTextInput.value);
-    clonedAudioUrl.value = URL.createObjectURL(audioBlob);
-    
-    // 自动播放克隆语音
-    if (clonedAudioPlayer.value) {
-      clonedAudioPlayer.value.play();
-    }
-  } catch (error) {
-    console.error('声音克隆失败:', error);
-    errorMessage.value = '声音克隆失败，请确保后端OpenVoice服务已启动';
-  } finally {
-    isCloning.value = false;
-  }
-}
-
-/**
- * 播放克隆语音
- */
-function playClonedAudio() {
-  if (clonedAudioPlayer.value && clonedAudioUrl.value) {
-    clonedAudioPlayer.value.play();
-  }
-}
-
-// 组件挂载时初始化 canvas 尺寸
+// 组件挂载时初始化
 onMounted(() => {
   nextTick(() => {
     const canvas = canvasRef.value;
     if (canvas) {
-      // 设置 canvas 实际渲染尺寸
       const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * 2; // 提高分辨率
+      canvas.width = rect.width * 2;
       canvas.height = rect.height * 2;
     }
   });
+  
+  // 加载声音档案
+  loadVoiceProfiles();
 });
 
 // 组件卸载时清理资源
@@ -379,13 +382,14 @@ onUnmounted(() => {
     audioContext.close();
   }
   
-  // 取消正在播放的语音
   stopSpeaking();
   
-  // 清理克隆音频URL
-  if (clonedAudioUrl.value) {
-    URL.revokeObjectURL(clonedAudioUrl.value);
-  }
+  // 清理对话历史中的URL
+  chatHistory.value.forEach(item => {
+    if (item.audioUrl) {
+      URL.revokeObjectURL(item.audioUrl);
+    }
+  });
 });
 </script>
 
@@ -393,145 +397,121 @@ onUnmounted(() => {
   <div class="voice-chat-container">
     <h1>AI数字人语音对话</h1>
     
+    <!-- 声音档案选择区 -->
+    <div class="profile-section">
+      <div class="profile-header">
+        <h3>声音档案</h3>
+        <button @click="showProfilePanel = !showProfilePanel" class="btn-small">
+          {{ showProfilePanel ? '收起' : '管理' }}
+        </button>
+      </div>
+      
+      <div v-if="showProfilePanel" class="profile-panel">
+        <div class="profile-input">
+          <input 
+            v-model="newProfileName" 
+            type="text" 
+            placeholder="输入档案名称..."
+            class="text-input"
+          />
+          <button 
+            @click="handleCreateProfile" 
+            :disabled="isCreatingProfile"
+            class="btn-small"
+          >
+            {{ isCreatingProfile ? '创建中...' : '上传音频创建' }}
+          </button>
+        </div>
+        
+        <div class="profile-list">
+          <div 
+            v-for="profile in voiceProfiles" 
+            :key="profile.id"
+            :class="['profile-item', { selected: selectedProfileId === profile.id }]"
+            @click="selectProfile(profile.id)"
+          >
+            <span class="profile-name">{{ profile.name }}</span>
+            <button 
+              @click.stop="handleDeleteProfile(profile.id)" 
+              class="btn-delete"
+            >
+              ×
+            </button>
+          </div>
+          <div v-if="voiceProfiles.length === 0" class="no-profile">
+            暂无声音档案，请上传参考音频创建
+          </div>
+        </div>
+      </div>
+      
+      <div v-if="selectedProfileId" class="selected-profile">
+        已选择: {{ voiceProfiles.find(p => p.id === selectedProfileId)?.name || '未选择' }}
+      </div>
+      <div v-else class="no-profile-selected">
+        未选择声音档案（将使用默认文字回复）
+      </div>
+    </div>
+    
     <!-- 录音控制区 -->
     <div class="record-section">
       <button 
         :class="['record-btn', isRecording ? 'recording' : '']"
-        @click="isRecording ? stopRecording() : startRecording()"
-        :disabled="isLoading || isSpeaking"
+        @mousedown="startRecording"
+        @mouseup="stopRecording"
+        @mouseleave="stopRecording"
+        :disabled="isLoading"
       >
-        <span class="icon">{{ isRecording ? '⏹' : '🎤' }}</span>
-        <span>{{ isRecording ? '停止录音' : '开始录音' }}</span>
+        {{ isRecording ? '松开结束' : '按住说话' }}
       </button>
       
-      <!-- 波形可视化 -->
-      <div v-if="isRecording" class="waveform-container">
-        <canvas ref="canvasRef" class="waveform-canvas"></canvas>
-      </div>
-      
-      <div v-if="isRecording" class="recording-indicator">
-        <span class="pulse"></span>
-        <span>正在录音...</span>
-      </div>
+      <canvas ref="canvasRef" class="waveform-canvas"></canvas>
     </div>
     
     <!-- 加载状态 -->
     <div v-if="isLoading" class="loading-section">
       <div class="spinner"></div>
-      <p>正在处理中...</p>
+      <span>处理中...</span>
     </div>
     
-    <!-- 错误提示 -->
-    <div v-if="errorMessage" class="error-message" @click="clearError">
+    <!-- 错误信息 -->
+    <div v-if="errorMessage" class="error-section" @click="clearError">
       {{ errorMessage }}
     </div>
     
     <!-- 对话历史 -->
-    <div class="conversation-section" v-if="recognizedText || replyText">
-      <div class="message user-message" v-if="recognizedText">
-        <div class="avatar">👤</div>
-        <div class="message-content">
-          <p>{{ recognizedText }}</p>
-        </div>
-      </div>
-      
-      <div class="message ai-message" v-if="replyText">
-        <div class="avatar">🤖</div>
-        <div class="message-content">
-          <p>{{ replyText }}</p>
-          <div v-if="isSpeaking" class="speaking-controls">
-            <span class="sound-wave"></span>
-            <span>正在播放...</span>
-            <button @click="stopSpeaking" class="stop-btn" title="停止播放">
-              ⏹ 停止
-            </button>
-          </div>
+    <div v-if="chatHistory.length > 0" class="chat-history">
+      <h3>对话记录</h3>
+      <div 
+        v-for="(item, index) in chatHistory" 
+        :key="index"
+        :class="['chat-item', item.type]"
+      >
+        <div class="chat-text">{{ item.text }}</div>
+        <div v-if="item.audioUrl" class="chat-audio">
+          <audio :src="item.audioUrl" controls></audio>
+          <span class="audio-file">{{ item.audioFile }}</span>
         </div>
       </div>
     </div>
     
-    <!-- 声音克隆功能区 -->
-    <div class="clone-section">
-      <button class="toggle-clone-btn" @click="toggleCloneSection">
-        {{ showCloneSection ? '隐藏声音克隆' : '声音克隆' }}
-      </button>
-      
-      <div v-if="showCloneSection" class="clone-panel">
-        <h3>声音克隆</h3>
-        
-        <!-- 参考音频上传 -->
-        <div class="upload-area">
-          <label class="upload-label">
-            <input 
-              type="file" 
-              accept="audio/*" 
-              @change="handleReferenceFileChange"
-              class="file-input"
-            />
-            <span class="upload-btn">
-              {{ referenceAudioFile ? '✅ ' + referenceAudioFile.name : '📁 上传参考音频' }}
-            </span>
-          </label>
-        </div>
-        
-        <!-- 文本输入 -->
-        <div class="text-input-area">
-          <textarea 
-            v-model="cloneTextInput"
-            placeholder="输入要合成的文本..."
-            rows="3"
-            class="clone-textarea"
-          ></textarea>
-        </div>
-        
-        <!-- 克隆按钮 -->
-        <button 
-          class="clone-btn"
-          @click="executeVoiceClone"
-          :disabled="isCloning || !referenceAudioFile || !cloneTextInput.trim()"
-        >
-          {{ isCloning ? '克隆中...' : '🎙️ 生成克隆语音' }}
-        </button>
-        
-        <!-- 克隆结果 -->
-        <div v-if="clonedAudioUrl" class="clone-result">
-          <p>✅ 克隆成功！</p>
-          <audio 
-            ref="clonedAudioPlayer"
-            :src="clonedAudioUrl" 
-            controls
-            class="audio-player"
-          ></audio>
-          <button @click="playClonedAudio" class="replay-btn">🔊 重新播放</button>
-        </div>
-      </div>
+    <!-- 语音控制 -->
+    <div v-if="isSpeaking" class="speaking-controls">
+      <button @click="stopSpeaking" class="btn-stop">停止播放</button>
     </div>
     
     <!-- 使用说明 -->
     <div class="tips-section">
-      <h3>💡 快速上手</h3>
-      <div class="tips-grid">
-        <div class="tip-item">
-          <span class="tip-icon">🎤</span>
-          <div class="tip-content">
-            <strong>录音对话</strong>
-            <p>点击录音按钮，说完后再次点击停止，系统自动识别并回复</p>
-          </div>
-        </div>
-        <div class="tip-item">
-          <span class="tip-icon">⏹</span>
-          <div class="tip-content">
-            <strong>随时打断</strong>
-            <p>AI回复时点击"停止"按钮可立即中断语音播放</p>
-          </div>
-        </div>
-        <div class="tip-item">
-          <span class="tip-icon">🎭</span>
-          <div class="tip-content">
-            <strong>声音克隆</strong>
-            <p>上传3-30秒参考音频，输入文本即可生成克隆语音</p>
-          </div>
-        </div>
+      <div class="tip-item">
+        <span class="tip-icon">🎤</span>
+        <span class="tip-content">按住按钮说话，松开自动识别</span>
+      </div>
+      <div class="tip-item">
+        <span class="tip-icon">🎭</span>
+        <span class="tip-content">上传参考音频创建声音档案，AI将用该声音回复</span>
+      </div>
+      <div class="tip-item">
+        <span class="tip-icon">💾</span>
+        <span class="tip-content">每次回复的音频会自动保存，可在对话记录中回放</span>
       </div>
     </div>
   </div>
@@ -551,433 +531,284 @@ h1 {
   margin-bottom: 30px;
 }
 
-.record-section {
+h3 {
+  color: #0f5132;
+  margin: 0 0 10px 0;
+  font-size: 16px;
+}
+
+/* 声音档案区 */
+.profile-section {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.profile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.profile-panel {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.profile-input {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.text-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.profile-list {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 15px;
-  margin-bottom: 30px;
+  gap: 8px;
 }
 
-.record-btn {
+.profile-item {
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 10px;
-  padding: 15px 30px;
-  font-size: 18px;
-  border: none;
-  border-radius: 50px;
-  background: linear-gradient(135deg, #0f5132, #2d8a6e);
-  color: white;
+  padding: 10px 15px;
+  background: white;
+  border-radius: 8px;
   cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 4px 15px rgba(15, 81, 50, 0.3);
+  transition: all 0.2s;
 }
 
-.record-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(15, 81, 50, 0.4);
+.profile-item:hover {
+  background: #e8f5e9;
 }
 
-.record-btn:disabled {
-  opacity: 0.6;
+.profile-item.selected {
+  background: #2d8a6e;
+  color: white;
+}
+
+.btn-delete {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: #999;
+  cursor: pointer;
+  padding: 0 5px;
+}
+
+.btn-delete:hover {
+  color: #ff4444;
+}
+
+.no-profile, .no-profile-selected {
+  text-align: center;
+  color: #999;
+  padding: 10px;
+  font-size: 14px;
+}
+
+.selected-profile {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #e8f5e9;
+  border-radius: 6px;
+  color: #0f5132;
+  font-size: 14px;
+}
+
+/* 按钮 */
+.btn-small {
+  padding: 6px 12px;
+  background: #2d8a6e;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.btn-small:hover {
+  background: #1e6b52;
+}
+
+.btn-small:disabled {
+  background: #ccc;
   cursor: not-allowed;
 }
 
+.btn-stop {
+  padding: 8px 16px;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* 录音区 */
+.record-section {
+  text-align: center;
+  margin: 30px 0;
+}
+
+.record-btn {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #2d8a6e, #0f5132);
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 4px 15px rgba(45, 138, 110, 0.3);
+}
+
+.record-btn:hover {
+  transform: scale(1.05);
+}
+
 .record-btn.recording {
-  background: linear-gradient(135deg, #dc3545, #ff6b6b);
-  animation: pulse 1.5s infinite;
+  background: linear-gradient(135deg, #dc3545, #a020f0);
+  animation: pulse 1s infinite;
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
-}
-
-.icon {
-  font-size: 24px;
-}
-
-/* 波形可视化容器 */
-.waveform-container {
-  width: 100%;
-  max-width: 500px;
-  height: 100px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
 }
 
 .waveform-canvas {
   width: 100%;
-  height: 100%;
-  display: block;
-}
-
-.recording-indicator {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #dc3545;
-  font-weight: 500;
-}
-
-.pulse {
-  width: 12px;
-  height: 12px;
-  background: #dc3545;
-  border-radius: 50%;
-  animation: blink 1s infinite;
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-.loading-section {
-  text-align: center;
-  padding: 30px;
-}
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #2d8a6e;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin: 0 auto 15px;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.error-message {
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  color: #856404;
-  padding: 12px 20px;
+  height: 100px;
+  margin-top: 20px;
   border-radius: 8px;
-  margin-bottom: 20px;
-  cursor: pointer;
-  text-align: center;
 }
 
-.conversation-section {
-  margin-bottom: 30px;
-}
-
-.message {
-  display: flex;
-  gap: 15px;
-  margin-bottom: 20px;
-  animation: fadeIn 0.3s ease;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.user-message {
-  flex-direction: row-reverse;
-}
-
-.ai-message {
-  flex-direction: row;
-}
-
-.avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+/* 加载状态 */
+.loading-section {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
-  flex-shrink: 0;
-}
-
-.user-message .avatar {
-  background: #e9ecef;
-}
-
-.ai-message .avatar {
-  background: #d4edda;
-}
-
-.message-content {
-  max-width: 70%;
+  gap: 10px;
   padding: 15px;
-  border-radius: 12px;
-  background: white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  color: #666;
 }
 
-.user-message .message-content {
-  background: #d4edda;
-}
-
-.message-content p {
-  margin: 0 0 10px 0;
-  line-height: 1.6;
-}
-
-/* 语音播放控制 */
-.speaking-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid #e9ecef;
-}
-
-.sound-wave {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  background: linear-gradient(135deg, #2d8a6e, #0f5132);
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #ddd;
+  border-top-color: #2d8a6e;
   border-radius: 50%;
-  animation: soundPulse 1s infinite;
-  flex-shrink: 0;
+  animation: spin 1s linear infinite;
 }
 
-@keyframes soundPulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.3); opacity: 0.7; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
-.speaking-controls span:last-of-type {
-  font-size: 13px;
-  color: #2d8a6e;
-  flex: 1;
-}
-
-.stop-btn {
-  padding: 4px 12px;
-  font-size: 12px;
-  border: 1px solid #dc3545;
-  border-radius: 4px;
-  background: white;
+/* 错误信息 */
+.error-section {
+  background: #fff3f3;
   color: #dc3545;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-}
-
-.stop-btn:hover {
-  background: #dc3545;
-  color: white;
-}
-
-/* 声音克隆区域 */
-.clone-section {
-  margin-bottom: 30px;
-  text-align: center;
-}
-
-.toggle-clone-btn {
-  padding: 12px 24px;
-  font-size: 16px;
-  border: 2px solid #2d8a6e;
+  padding: 12px;
   border-radius: 8px;
-  background: white;
-  color: #2d8a6e;
+  text-align: center;
+  margin: 15px 0;
   cursor: pointer;
-  transition: all 0.3s ease;
 }
 
-.toggle-clone-btn:hover {
-  background: #2d8a6e;
-  color: white;
-}
-
-.clone-panel {
-  margin-top: 20px;
-  padding: 20px;
+/* 对话历史 */
+.chat-history {
   background: #f8f9fa;
   border-radius: 12px;
-  border-left: 4px solid #2d8a6e;
-}
-
-.clone-panel h3 {
-  margin: 0 0 20px 0;
-  color: #2d8a6e;
-}
-
-.upload-area {
-  margin-bottom: 15px;
-}
-
-.upload-label {
-  display: inline-block;
-  cursor: pointer;
-}
-
-.file-input {
-  display: none;
-}
-
-.upload-btn {
-  display: inline-block;
-  padding: 10px 20px;
-  background: white;
-  border: 2px dashed #2d8a6e;
-  border-radius: 8px;
-  color: #2d8a6e;
-  transition: all 0.3s ease;
-}
-
-.upload-btn:hover {
-  background: #e8f5f0;
-}
-
-.text-input-area {
-  margin-bottom: 15px;
-}
-
-.clone-textarea {
-  width: 100%;
-  max-width: 500px;
-  padding: 12px;
-  border: 2px solid #dee2e6;
-  border-radius: 8px;
-  font-size: 14px;
-  resize: vertical;
-  font-family: inherit;
-}
-
-.clone-textarea:focus {
-  outline: none;
-  border-color: #2d8a6e;
-}
-
-.clone-btn {
-  padding: 12px 30px;
-  font-size: 16px;
-  border: none;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #0f5132, #2d8a6e);
-  color: white;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  margin-bottom: 20px;
-}
-
-.clone-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 15px rgba(15, 81, 50, 0.3);
-}
-
-.clone-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.clone-result {
   padding: 15px;
-  background: white;
+  margin: 20px 0;
+}
+
+.chat-item {
+  padding: 12px;
+  margin: 10px 0;
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
-.clone-result p {
-  margin: 0 0 15px 0;
-  color: #2d8a6e;
-  font-weight: 500;
+.chat-item.user {
+  background: #e3f2fd;
+  margin-left: 20px;
 }
 
-.audio-player {
-  width: 100%;
-  max-width: 400px;
-  margin-bottom: 10px;
-}
-
-.replay-btn {
-  padding: 8px 16px;
-  font-size: 14px;
-  border: 1px solid #2d8a6e;
-  border-radius: 6px;
+.chat-item.ai {
   background: white;
-  color: #2d8a6e;
-  cursor: pointer;
-  transition: all 0.3s ease;
+  margin-right: 20px;
+  border: 1px solid #e0e0e0;
 }
 
-.replay-btn:hover {
-  background: #2d8a6e;
-  color: white;
+.chat-text {
+  margin-bottom: 8px;
 }
 
-/* 使用说明优化 */
-.tips-section {
-  background: linear-gradient(135deg, #f8f9fa 0%, #e8f5f0 100%);
-  padding: 24px;
-  border-radius: 12px;
-  border: 1px solid #d4edda;
-}
-
-.tips-section h3 {
-  margin: 0 0 20px 0;
-  color: #2d8a6e;
-  font-size: 18px;
+.chat-audio {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.tips-grid {
+.chat-audio audio {
+  height: 32px;
+}
+
+.audio-file {
+  font-size: 12px;
+  color: #999;
+}
+
+/* 语音控制 */
+.speaking-controls {
+  text-align: center;
+  margin: 15px 0;
+}
+
+/* 使用说明 */
+.tips-section {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 15px;
+  margin-top: 30px;
 }
 
 .tip-item {
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
   padding: 12px;
-  background: white;
+  background: #f8f9fa;
   border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  transition: all 0.2s ease;
-}
-
-.tip-item:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  transform: translateY(-2px);
 }
 
 .tip-icon {
   font-size: 24px;
-  flex-shrink: 0;
 }
 
-.tip-content strong {
-  display: block;
-  color: #2d8a6e;
-  margin-bottom: 4px;
-  font-size: 14px;
-}
-
-.tip-content p {
-  margin: 0;
+.tip-content {
   font-size: 13px;
-  color: #6c757d;
-  line-height: 1.5;
+  color: #666;
 }
 
 @media (max-width: 600px) {
-  .tips-grid {
+  .tips-section {
     grid-template-columns: 1fr;
-  }
-  
-  .message-content {
-    max-width: 85%;
   }
 }
 </style>
