@@ -12,8 +12,35 @@ class VoiceCloningService {
     this.baseUrl = process.env.OPENVOICE_URL || 'http://localhost:8000';
     this.enabled = false;
     
-    // 检查 OpenVoice 服务是否可用
-    this.checkAvailability();
+    // 检查 OpenVoice 服务是否可用（带重试）
+    this.checkAvailabilityWithRetry();
+  }
+
+  /**
+   * 带重试检查 OpenVoice 服务可用性
+   */
+  async checkAvailabilityWithRetry(maxRetries = 3, delay = 2000) {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const response = await axios.get(`${this.baseUrl}/api/v1/health`, {
+          timeout: 3000
+        });
+        
+        if (response.data.status === 'ok') {
+          this.enabled = true;
+          console.log('[VoiceCloning] OpenVoice 服务已连接');
+          return;
+        }
+      } catch (error) {
+        console.warn(`[VoiceCloning] OpenVoice 服务连接失败 (${i + 1}/${maxRetries})`);
+        if (i < maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    console.warn('[VoiceCloning] OpenVoice 服务不可用，将使用Mock模式');
+    console.warn('[VoiceCloning] 要启用真实功能，请部署 OpenVoice 服务');
+    this.enabled = false;
   }
 
   /**
@@ -51,6 +78,19 @@ class VoiceCloningService {
         console.log('[VoiceCloning] 使用Mock数据');
         return this.getMockAudio();
       }
+
+      // 调试日志
+      console.log(`[VoiceCloning] 参考音频路径: ${referenceAudioPath}`);
+      console.log(`[VoiceCloning] 文本: ${text}`);
+      console.log(`[VoiceCloning] 语言: ${language}`);
+
+      // 检查文件是否存在
+      if (!fs.existsSync(referenceAudioPath)) {
+        throw new Error(`参考音频文件不存在: ${referenceAudioPath}`);
+      }
+
+      const fileSize = fs.statSync(referenceAudioPath).size;
+      console.log(`[VoiceCloning] 文件大小: ${fileSize} bytes`);
 
       // 创建可读流
       readStream = fs.createReadStream(referenceAudioPath);

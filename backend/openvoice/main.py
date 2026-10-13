@@ -2,7 +2,14 @@
 OpenVoice V2 声音克隆服务
 使用 MeloTTS 生成基础语音 + ToneColorConverter 转换音色
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import os
+
+# 设置 ffmpeg 路径（使用后端 node_modules 中的 ffmpeg）
+ffmpeg_path = r"D:\VUE\AI-person\backend\node_modules\@ffmpeg-installer\win32-x64"
+if os.path.exists(ffmpeg_path):
+    os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ.get("PATH", "")
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 import uvicorn
@@ -116,8 +123,8 @@ async def startup_event():
 @app.post("/api/v1/clone_and_synthesize")
 async def clone_and_synthesize(
     reference_audio: UploadFile = File(...),
-    text: str = "",
-    language: str = "zh"
+    text: str = Form(...),
+    language: str = Form(default="zh")
 ):
     """
     声音克隆 + 语音合成
@@ -163,7 +170,7 @@ async def clone_and_synthesize(
                 source_audio_path = src_tmp.name
             
             print(f"[OpenVoice] MeloTTS 生成基础语音...")
-            tts_model.tts_to_file(text, tts_model.hps.data.spk2id[0], source_audio_path)
+            tts_model.tts_to_file(text, 0, source_audio_path)
             print(f"[OpenVoice] 基础语音生成完成: {source_audio_path}")
             
             try:
